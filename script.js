@@ -6,47 +6,127 @@ const PHOTOS_DIR = "photos/";
 const MAX_SCAN = 500;
 let newestFirst = true;
 
-// The program reads the timestamp embedded in each filename.
-// It supports common mobile-style names such as:
-// IMG_20260917_143025.jpg
-// 20260917_143025.jpg
-// 2026-09-17_14-30-25.jpg
-// IMG-20260917-WA0012.jpg (date only: time is unavailable)
-function extractDateFromFilename(filename) {
-  const name = filename.replace(/\.[^.]+$/, "");
+// Read the actual photograph time from JPEG EXIF metadata.
+// This is independent of the filename because Android/Windows may change it.
+async function extractExifDate(url) {
+  try {
+    const response = await fetch(url, { cache: "no-store" });
+    if (!response.ok) return null;
 
-  // YYYYMMDD_HHMMSS or YYYYMMDD-HHMMSS
-  let match = name.match(/(20\d{2})(\d{2})(\d{2})[_-]([01]\d|2[0-3])([0-5]\d)([0-5]\d)/);
-  if (match) {
-    return new Date(
-      Number(match[1]), Number(match[2]) - 1, Number(match[3]),
-      Number(match[4]), Number(match[5]), Number(match[6])
-    );
+    const buffer = await response.arrayBuffer();
+    const view = new DataView(buffer);
+    if (view.byteLength < 4 || view.getUint16(0) !== 0xFFD8) return null;
+
+    let offset = 2;
+    while (offset + 4 <= view.byteLength) {
+      if (view.getUint8(offset) !== 0xFF) return null;
+      const marker = view.getUint8(offset + 1);
+      offset += 2;
+
+      if (marker === 0xDA || marker === 0xD9) break;
+      if (marker >= 0xD0 && marker <= 0xD7) continue;
+      if (offset + 2 > view.byteLength) break;
+
+      const segmentLength = view.getUint16(offset);
+      if (segmentLength < 2 || offset + segmentLength > view.byteLength) break;
+
+      if (marker === 0xE1 && segmentLength >= 8) {
+        const exifStart = offset + 2;
+        if (readAscii(view, exifStart, 6) === "Exif\0\0") {
+          return parseExif(view, exifStart + 6, offset + segmentLength);
+        }
+      }
+      offset += segmentLength;
+    }
+  } catch (error) {
+    console.warn("Could not read EXIF:", url, error);
   }
-
-  // YYYY-MM-DD_HH-MM-SS or YYYY-MM-DD_HHMMSS
-  match = name.match(/(20\d{2})[-_](\d{2})[-_](\d{2})[ T_-](\d{2})[-_:]?(\d{2})[-_:]?(\d{2})/);
-  if (match) {
-    return new Date(
-      Number(match[1]), Number(match[2]) - 1, Number(match[3]),
-      Number(match[4]), Number(match[5]), Number(match[6])
-    );
-  }
-
-  // YYYYMMDD only. Useful for filenames where the phone supplies date but no time.
-  match = name.match(/(?:^|[^0-9])(20\d{2})(\d{2})(\d{2})(?:[^0-9]|$)/);
-  if (match) {
-    return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
-  }
-
   return null;
+}
+
+function readAscii(view, offset, length) {
+  let result = "";
+  for (let i = 0; i < length && offset + i < view.byteLength; i++) {
+    result += String.fromCharCode(view.getUint8(offset + i));
+  }
+  return result;
+}
+
+function parseExif(view, tiffStart, tiffEnd) {
+  if (tiffStart + 8 > tiffEnd) return null;
+
+  const byteOrder = readAscii(view, tiffStart, 2);
+  const littleEndian = byteOrder === "II";
+  if (!littleEndian && byteOrder !== "MM") return null;
+
+  const get16 = p => view.getUint16(p, littleEndian);
+  const get32 = p => view.getUint32(p, littleEndian);
+  if (get16(tiffStart + 2) !== 42) return null;
+
+  const firstIFD = tiffStart + get32(tiffStart + 4);
+  if (firstIFD < tiffStart || firstIFD + 2 > tiffEnd) return null;
+
+  let exifIFD = null;
+  let dateTimeFallback = null;
+  const entryCount = get16(firstIFD);
+
+  for (let i = 0; i < entryCount; i++) {
+    const entry = firstIFD + 2 + i * 12;
+    if (entry + 12 > tiffEnd) break;
+    const tag = get16(entry);
+
+    if (tag === 0x8769) {
+      exifIFD = tiffStart + get32(entry + 8);
+    } else if (tag === 0x0132) {
+      dateTimeFallback = readIFDAscii(entry, view, tiffStart, tiffEnd, get16, get32);
+    }
+  }
+
+  if (exifIFD !== null && exifIFD + 2 <= tiffEnd) {
+    const exifCount = get16(exifIFD);
+    for (let i = 0; i < exifCount; i++) {
+      const entry = exifIFD + 2 + i * 12;
+      if (entry + 12 > tiffEnd) break;
+      const tag = get16(entry);
+
+      // 0x9003 = DateTimeOriginal; 0x9004 = DateTimeDigitized.
+      if (tag === 0x9003 || tag === 0x9004) {
+        const text = readIFDAscii(entry, view, tiffStart, tiffEnd, get16, get32);
+        const date = parseExifDate(text);
+        if (date) return date;
+      }
+    }
+  }
+
+  return parseExifDate(dateTimeFallback);
+}
+
+function readIFDAscii(entry, view, tiffStart, tiffEnd, get16, get32) {
+  const type = get16(entry + 2);
+  const count = get32(entry + 4);
+  if (type !== 2 || count < 1) return null;
+
+  const dataOffset = count <= 4 ? entry + 8 : tiffStart + get32(entry + 8);
+  if (dataOffset < tiffStart || dataOffset + count > tiffEnd) return null;
+  return readAscii(view, dataOffset, count).replace(/\0.*$/, "").trim();
+}
+
+function parseExifDate(text) {
+  if (!text) return null;
+  const match = text.match(/^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/);
+  if (!match) return null;
+
+  const date = new Date(
+    Number(match[1]), Number(match[2]) - 1, Number(match[3]),
+    Number(match[4]), Number(match[5]), Number(match[6])
+  );
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 function formatDate(date) {
   if (!date) return "Time unavailable";
-
   const pad = value => String(value).padStart(2, "0");
-  return `${pad(date.getHours())} ${pad(date.getMinutes())}  ${pad(date.getDate())} ${pad(date.getMonth() + 1)} ${String(date.getFullYear()).slice(-2)}`;
+  return `${pad(date.getHours())}:${pad(date.getMinutes())} ${pad(date.getDate())}-${pad(date.getMonth() + 1)}-${String(date.getFullYear()).slice(-2)}`;
 }
 
 function isJpg(filename) {
@@ -76,12 +156,9 @@ function createCard(photo) {
 }
 
 async function getPhotoList() {
-  // GitHub Pages cannot list a directory by itself. The GitHub API is used
-  // only to discover the JPG filenames; the actual images are loaded from
-  // this site's own photos/ directory.
+  // GitHub API discovers the filenames; the images themselves come from photos/.
   const apiUrl = "https://api.github.com/repos/srbee/dailypics/contents/photos";
   const response = await fetch(apiUrl, { cache: "no-store" });
-
   if (!response.ok) {
     throw new Error(`Could not read photos directory (${response.status})`);
   }
@@ -89,13 +166,15 @@ async function getPhotoList() {
   const entries = await response.json();
   if (!Array.isArray(entries)) return [];
 
-  return entries
+  const files = entries
     .filter(entry => entry.type === "file" && isJpg(entry.name))
-    .map(entry => ({
-      name: entry.name,
-      date: extractDateFromFilename(entry.name)
-    }))
     .slice(0, MAX_SCAN);
+
+  // Read the capture time from every JPG's EXIF metadata.
+  return Promise.all(files.map(async entry => ({
+    name: entry.name,
+    date: await extractExifDate(`${PHOTOS_DIR}${encodeURIComponent(entry.name)}`)
+  })));
 }
 
 function render(photos) {
@@ -104,14 +183,8 @@ function render(photos) {
   const sorted = [...photos].sort((a, b) => {
     const timeA = a.date ? a.date.getTime() : -Infinity;
     const timeB = b.date ? b.date.getTime() : -Infinity;
-
-    if (timeA !== timeB) {
-      return newestFirst ? timeB - timeA : timeA - timeB;
-    }
-
-    return newestFirst
-      ? b.name.localeCompare(a.name)
-      : a.name.localeCompare(b.name);
+    if (timeA !== timeB) return newestFirst ? timeB - timeA : timeA - timeB;
+    return newestFirst ? b.name.localeCompare(a.name) : a.name.localeCompare(b.name);
   });
 
   sorted.forEach(photo => gallery.appendChild(createCard(photo)));
@@ -128,7 +201,7 @@ function render(photos) {
 
 async function loadGallery() {
   try {
-    message.textContent = "Looking for photos…";
+    message.textContent = "Reading photo dates…";
     const photos = await getPhotoList();
     render(photos);
   } catch (error) {
