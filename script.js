@@ -6,6 +6,7 @@ const PHOTOS_DIR = "photos/";
 const RAW_DIR = "https://raw.githubusercontent.com/srbee/dailypics/main/photos/";
 const MAX_SCAN = 500;
 const EXIF_BYTES = 65536;
+const FEATURED_NAME = "000.png";
 let newestFirst = true;
 let currentPhotos = [];
 let loadGeneration = 0;
@@ -127,23 +128,30 @@ function formatDate(date) {
   return `${pad(date.getHours())}:${pad(date.getMinutes())} ${pad(date.getDate())}-${pad(date.getMonth() + 1)}-${String(date.getFullYear()).slice(-2)}`;
 }
 
-function isJpg(filename) {
-  return /\.jpe?g$/i.test(filename);
+function isImage(filename) {
+  return /\.(jpe?g|png)$/i.test(filename);
 }
 
 function createCard(photo) {
   const card = document.createElement("article");
   card.className = "photo-card";
+  if (photo.name === FEATURED_NAME) card.classList.add("featured-poster");
+
   const time = document.createElement("div");
   time.className = "photo-time";
-  time.textContent = formatDate(photo.date);
+  time.textContent = photo.name === FEATURED_NAME ? "Featured poster" : formatDate(photo.date);
+
   const frame = document.createElement("div");
   frame.className = "photo-frame";
+
   const image = document.createElement("img");
   image.src = `${PHOTOS_DIR}${encodeURIComponent(photo.name)}`;
-  image.alt = `Daily Pic taken ${formatDate(photo.date)}`;
-  image.loading = "lazy";
+  image.alt = photo.name === FEATURED_NAME
+    ? "Featured Lord Ganesha poster"
+    : `Daily Pic taken ${formatDate(photo.date)}`;
+  image.loading = photo.name === FEATURED_NAME ? "eager" : "lazy";
   image.decoding = "async";
+
   frame.appendChild(image);
   card.append(time, frame);
   return card;
@@ -154,38 +162,62 @@ async function getPhotoList() {
   if (!response.ok) throw new Error(`Could not read photos directory (${response.status})`);
   const entries = await response.json();
   if (!Array.isArray(entries)) return [];
-  const files = entries.filter(entry => entry.type === "file" && isJpg(entry.name)).slice(0, MAX_SCAN);
+
+  const files = entries
+    .filter(entry => entry.type === "file" && isImage(entry.name))
+    .slice(0, MAX_SCAN);
+
   const results = [];
   const workers = Math.min(6, files.length);
   let next = 0;
+
   async function worker() {
     while (next < files.length) {
       const index = next++;
       const entry = files[index];
-      const filenameDate = parseFilenameDate(entry.name);
-      results[index] = {
-        name: entry.name,
-        date: filenameDate || await extractExifDate(entry.name)
-      };
+
+      if (entry.name === FEATURED_NAME) {
+        results[index] = { name: entry.name, date: null };
+      } else {
+        const filenameDate = parseFilenameDate(entry.name);
+        results[index] = {
+          name: entry.name,
+          date: filenameDate || await extractExifDate(entry.name)
+        };
+      }
     }
   }
+
   await Promise.all(Array.from({ length: workers }, worker));
   return results;
 }
 
 function render(photos) {
   gallery.replaceChildren();
-  const sorted = [...photos].sort((a, b) => {
+
+  const featured = photos.find(photo => photo.name === FEATURED_NAME);
+  const regular = photos.filter(photo => photo.name !== FEATURED_NAME);
+
+  const sorted = [...regular].sort((a, b) => {
     const timeA = a.date ? a.date.getTime() : -Infinity;
     const timeB = b.date ? b.date.getTime() : -Infinity;
     if (timeA !== timeB) return newestFirst ? timeB - timeA : timeA - timeB;
     return newestFirst ? b.name.localeCompare(a.name) : a.name.localeCompare(b.name);
   });
+
+  // 000.png is permanently pinned at the top, even when Reverse order is used.
+  if (featured) sorted.unshift(featured);
+
   sorted.forEach(photo => gallery.appendChild(createCard(photo)));
+
   message.classList.toggle("hidden", sorted.length > 0);
-  if (!sorted.length) message.textContent = "No JPG photos found in the photos folder yet.";
+  if (!sorted.length) message.textContent = "No JPG or PNG photos found in the photos folder yet.";
+
   orderButton.textContent = newestFirst ? "⇅ Reverse order" : "⇅ Newest first";
-  orderButton.setAttribute("aria-label", newestFirst ? "Show oldest photo first" : "Show newest photo first");
+  orderButton.setAttribute(
+    "aria-label",
+    newestFirst ? "Show oldest photo first" : "Show newest photo first"
+  );
 }
 
 async function loadGallery() {
