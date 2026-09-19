@@ -1,0 +1,46 @@
+name: Build photo manifest
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "photos/**"
+      - ".github/workflows/photo-manifest.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate photos.json
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("photos")
+          names = sorted(
+              p.name for p in root.iterdir()
+              if p.is_file() and p.suffix.lower() in {".jpg", ".jpeg", ".png"}
+              and p.name != "000.png"
+          )
+          Path("photos.json").write_text(
+              json.dumps(names, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8"
+          )
+          print(f"Found {len(names)} photos")
+          PY
+
+      - name: Commit manifest if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add photos.json
+          git diff --cached --quiet || git commit -m "Update photo manifest"
+          git push
