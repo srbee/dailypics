@@ -3,8 +3,6 @@ const message = document.getElementById("message");
 const orderButton = document.getElementById("orderButton");
 
 const PHOTOS_DIR = "photos/";
-const RAW_DIR = "https://raw.githubusercontent.com/srbee/dailypics/main/photos/";
-const MAX_SCAN = 500;
 const EXIF_BYTES = 65536;
 let newestFirst = true;
 let currentPhotos = [];
@@ -13,22 +11,15 @@ let loadGeneration = 0;
 function parseFilenameDate(name) {
   const match = name.match(/(?:IMG[_-])?(\d{4})(\d{2})(\d{2})[_-](\d{2})(\d{2})(\d{2})/i);
   if (!match) return null;
-  const date = new Date(
-    Number(match[1]), Number(match[2]) - 1, Number(match[3]),
-    Number(match[4]), Number(match[5]), Number(match[6])
-  );
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4]), Number(match[5]), Number(match[6]));
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
 async function extractExifDate(name) {
-  const url = `${RAW_DIR}${encodeURIComponent(name)}`;
   try {
-    const response = await fetch(url, {
-      headers: { Range: `bytes=0-${EXIF_BYTES - 1}` },
-      cache: "no-store"
-    });
-    if (!response.ok || response.status !== 206) return null;
-    return parseJpegExif(new DataView(await response.arrayBuffer()));
+    const response = await fetch(PHOTOS_DIR + encodeURIComponent(name), { cache: "force-cache" });
+    if (!response.ok) return null;
+    return parseJpegExif(new DataView((await response.arrayBuffer()).slice(0, EXIF_BYTES)));
   } catch (error) {
     console.warn("Could not read EXIF:", name, error);
     return null;
@@ -49,9 +40,7 @@ function parseJpegExif(view) {
     if (segmentLength < 2 || offset + segmentLength > view.byteLength) break;
     if (marker === 0xE1 && segmentLength >= 8) {
       const exifStart = offset + 2;
-      if (readAscii(view, exifStart, 6) === "Exif\0\0") {
-        return parseExif(view, exifStart + 6, offset + segmentLength);
-      }
+      if (readAscii(view, exifStart, 6) === "Exif\0\0") return parseExif(view, exifStart + 6, offset + segmentLength);
     }
     offset += segmentLength;
   }
@@ -60,9 +49,7 @@ function parseJpegExif(view) {
 
 function readAscii(view, offset, length) {
   let result = "";
-  for (let i = 0; i < length && offset + i < view.byteLength; i++) {
-    result += String.fromCharCode(view.getUint8(offset + i));
-  }
+  for (let i = 0; i < length && offset + i < view.byteLength; i++) result += String.fromCharCode(view.getUint8(offset + i));
   return result;
 }
 
@@ -76,8 +63,7 @@ function parseExif(view, tiffStart, tiffEnd) {
   if (get16(tiffStart + 2) !== 42) return null;
   const firstIFD = tiffStart + get32(tiffStart + 4);
   if (firstIFD < tiffStart || firstIFD + 2 > tiffEnd) return null;
-  let exifIFD = null;
-  let fallback = null;
+  let exifIFD = null, fallback = null;
   const count = get16(firstIFD);
   for (let i = 0; i < count; i++) {
     const entry = firstIFD + 2 + i * 12;
@@ -102,8 +88,7 @@ function parseExif(view, tiffStart, tiffEnd) {
 }
 
 function readIFDAscii(entry, view, tiffStart, tiffEnd, get16, get32) {
-  const type = get16(entry + 2);
-  const count = get32(entry + 4);
+  const type = get16(entry + 2), count = get32(entry + 4);
   if (type !== 2 || count < 1) return null;
   const dataOffset = count <= 4 ? entry + 8 : tiffStart + get32(entry + 8);
   if (dataOffset < tiffStart || dataOffset + count > tiffEnd) return null;
@@ -114,10 +99,7 @@ function parseExifDate(text) {
   if (!text) return null;
   const match = text.match(/^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/);
   if (!match) return null;
-  const date = new Date(
-    Number(match[1]), Number(match[2]) - 1, Number(match[3]),
-    Number(match[4]), Number(match[5]), Number(match[6])
-  );
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4]), Number(match[5]), Number(match[6]));
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
@@ -127,88 +109,65 @@ function formatDate(date) {
   return `${pad(date.getHours())}:${pad(date.getMinutes())} ${pad(date.getDate())}-${pad(date.getMonth() + 1)}-${String(date.getFullYear()).slice(-2)}`;
 }
 
-function isImage(filename) {
-  return /\.(jpe?g|png)$/i.test(filename);
-}
-
 function createCard(photo) {
   const card = document.createElement("article");
   card.className = "photo-card";
   const time = document.createElement("div");
   time.className = "photo-time";
   time.textContent = formatDate(photo.date);
-
   const frame = document.createElement("div");
   frame.className = "photo-frame";
-
   const image = document.createElement("img");
-  image.src = `${PHOTOS_DIR}${encodeURIComponent(photo.name)}`;
-  image.alt = `Daily Pic taken ${formatDate(photo.date)}`;
+  image.src = PHOTOS_DIR + encodeURIComponent(photo.name);
+  image.alt = `Daily Pic ${formatDate(photo.date)}`;
   image.loading = "lazy";
   image.decoding = "async";
-
   frame.appendChild(image);
   card.append(time, frame);
   return card;
 }
 
 async function getPhotoList() {
-  const response = await fetch("https://api.github.com/repos/srbee/dailypics/contents/photos", { cache: "no-store" });
-  if (!response.ok) throw new Error(`Could not read photos directory (${response.status})`);
-  const entries = await response.json();
-  if (!Array.isArray(entries)) return [];
+  const response = await fetch("photos.json?v=" + Date.now(), { cache: "no-store" });
+  if (!response.ok) throw new Error("Could not read photos.json (" + response.status + ")");
+  const names = await response.json();
+  if (!Array.isArray(names)) throw new Error("Invalid photos.json");
 
-  const files = entries
-    .filter(entry => entry.type === "file" && /\.jpe?g$/i.test(entry.name))
-    .slice(0, MAX_SCAN);
-
+  const files = names.filter(name => typeof name === "string" && /\.(jpe?g|png)$/i.test(name));
   const results = [];
-  const workers = Math.min(6, files.length);
   let next = 0;
+  const workers = Math.min(4, files.length);
 
   async function worker() {
     while (next < files.length) {
       const index = next++;
-      const entry = files[index];
-
-      const filenameDate = parseFilenameDate(entry.name);
-      results[index] = {
-        name: entry.name,
-        date: filenameDate || await extractExifDate(entry.name)
-      };
+      const name = files[index];
+      results[index] = { name, date: parseFilenameDate(name) || await extractExifDate(name) };
     }
   }
-
   await Promise.all(Array.from({ length: workers }, worker));
   return results;
 }
 
 function render(photos) {
   gallery.replaceChildren();
-
   const sorted = [...photos].sort((a, b) => {
     const timeA = a.date ? a.date.getTime() : -Infinity;
     const timeB = b.date ? b.date.getTime() : -Infinity;
     if (timeA !== timeB) return newestFirst ? timeB - timeA : timeA - timeB;
     return newestFirst ? b.name.localeCompare(a.name) : a.name.localeCompare(b.name);
   });
-
   sorted.forEach(photo => gallery.appendChild(createCard(photo)));
-
   message.classList.toggle("hidden", sorted.length > 0);
-  if (!sorted.length) message.textContent = "No JPG or PNG photos found in the photos folder yet.";
-
+  if (!sorted.length) message.textContent = "No photos found in the photos folder yet.";
   orderButton.textContent = newestFirst ? "⇅ Reverse order" : "⇅ Newest first";
-  orderButton.setAttribute(
-    "aria-label",
-    newestFirst ? "Show oldest photo first" : "Show newest photo first"
-  );
+  orderButton.setAttribute("aria-label", newestFirst ? "Show oldest photo first" : "Show newest photo first");
 }
 
 async function loadGallery() {
   const generation = ++loadGeneration;
   try {
-    message.textContent = "Reading photo dates…";
+    message.textContent = "Loading photos…";
     const photos = await getPhotoList();
     if (generation !== loadGeneration) return;
     currentPhotos = photos;
