@@ -134,21 +134,17 @@ function isImage(filename) {
 function createCard(photo) {
   const card = document.createElement("article");
   card.className = "photo-card";
-  if (photo.name === FEATURED_NAME) card.classList.add("featured-poster");
-
   const time = document.createElement("div");
   time.className = "photo-time";
-  time.textContent = photo.name === FEATURED_NAME ? "Featured poster" : formatDate(photo.date);
+  time.textContent = formatDate(photo.date);
 
   const frame = document.createElement("div");
   frame.className = "photo-frame";
 
   const image = document.createElement("img");
   image.src = `${PHOTOS_DIR}${encodeURIComponent(photo.name)}`;
-  image.alt = photo.name === FEATURED_NAME
-    ? "Featured Lord Ganesha poster"
-    : `Daily Pic taken ${formatDate(photo.date)}`;
-  image.loading = photo.name === FEATURED_NAME ? "eager" : "lazy";
+  image.alt = `Daily Pic taken ${formatDate(photo.date)}`;
+  image.loading = "lazy";
   image.decoding = "async";
 
   frame.appendChild(image);
