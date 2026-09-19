@@ -6,7 +6,6 @@ const PHOTOS_DIR = "photos/";
 const RAW_DIR = "https://raw.githubusercontent.com/srbee/dailypics/main/photos/";
 const MAX_SCAN = 500;
 const EXIF_BYTES = 65536;
-const FEATURED_NAME = "000.png";
 let newestFirst = true;
 let currentPhotos = [];
 let loadGeneration = 0;
@@ -164,7 +163,7 @@ async function getPhotoList() {
   if (!Array.isArray(entries)) return [];
 
   const files = entries
-    .filter(entry => entry.type === "file" && isImage(entry.name))
+    .filter(entry => entry.type === "file" && /\.jpe?g$/i.test(entry.name))
     .slice(0, MAX_SCAN);
 
   const results = [];
@@ -176,15 +175,11 @@ async function getPhotoList() {
       const index = next++;
       const entry = files[index];
 
-      if (entry.name === FEATURED_NAME) {
-        results[index] = { name: entry.name, date: null };
-      } else {
-        const filenameDate = parseFilenameDate(entry.name);
-        results[index] = {
-          name: entry.name,
-          date: filenameDate || await extractExifDate(entry.name)
-        };
-      }
+      const filenameDate = parseFilenameDate(entry.name);
+      results[index] = {
+        name: entry.name,
+        date: filenameDate || await extractExifDate(entry.name)
+      };
     }
   }
 
@@ -195,18 +190,12 @@ async function getPhotoList() {
 function render(photos) {
   gallery.replaceChildren();
 
-  const featured = photos.find(photo => photo.name === FEATURED_NAME);
-  const regular = photos.filter(photo => photo.name !== FEATURED_NAME);
-
-  const sorted = [...regular].sort((a, b) => {
+  const sorted = [...photos].sort((a, b) => {
     const timeA = a.date ? a.date.getTime() : -Infinity;
     const timeB = b.date ? b.date.getTime() : -Infinity;
     if (timeA !== timeB) return newestFirst ? timeB - timeA : timeA - timeB;
     return newestFirst ? b.name.localeCompare(a.name) : a.name.localeCompare(b.name);
   });
-
-  // 000.png is permanently pinned at the top, even when Reverse order is used.
-  if (featured) sorted.unshift(featured);
 
   sorted.forEach(photo => gallery.appendChild(createCard(photo)));
 
