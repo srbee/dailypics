@@ -1,6 +1,7 @@
 const gallery = document.getElementById("gallery");
 const message = document.getElementById("message");
 const orderButton = document.getElementById("orderButton");
+const photoCount = document.getElementById("photoCount");
 
 const PHOTOS_DIR = "photos/";
 const EXIF_BYTES = 65536;
@@ -158,6 +159,7 @@ function render(photos) {
     return newestFirst ? b.name.localeCompare(a.name) : a.name.localeCompare(b.name);
   });
   sorted.forEach(photo => gallery.appendChild(createCard(photo)));
+  photoCount.textContent = `Total photos: ${photos.length}`;
   message.classList.toggle("hidden", sorted.length > 0);
   if (!sorted.length) message.textContent = "No photos found in the photos folder yet.";
   orderButton.textContent = newestFirst ? "⇅ Reverse order" : "⇅ Newest first";
