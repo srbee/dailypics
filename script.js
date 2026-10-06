@@ -129,25 +129,63 @@ function createCard(photo) {
 }
 
 async function getPhotoList() {
-  const response = await fetch("photos.json?v=" + Date.now(), { cache: "no-store" });
-  if (!response.ok) throw new Error("Could not read photos.json (" + response.status + ")");
-  const names = await response.json();
-  if (!Array.isArray(names)) throw new Error("Invalid photos.json");
+  // Primary source: read the GitHub "photos" directory directly.
+  // This avoids waiting for the photo-manifest GitHub Action after a new upload.
+  const apiUrl = "https://api.github.com/repos/srbee/dailypics/contents/photos?ref=main";
+  try {
+    const response = await fetch(apiUrl, {
+      cache: "no-store",
+      headers: { Accept: "application/vnd.github+json" }
+    });
+    if (!response.ok) throw new Error("GitHub directory request failed (" + response.status + ")");
+    const entries = await response.json();
+    if (!Array.isArray(entries)) throw new Error("Invalid GitHub directory response");
 
-  const files = names.filter(name => typeof name === "string" && /\.(jpe?g|png)$/i.test(name));
-  const results = [];
-  let next = 0;
-  const workers = Math.min(4, files.length);
+    const files = entries
+      .filter(entry =>
+        entry && entry.type === "file" &&
+        typeof entry.name === "string" &&
+        /\.(jpe?g|png)$/i.test(entry.name) &&
+        entry.name !== "000.png"
+      )
+      .map(entry => entry.name);
 
-  async function worker() {
-    while (next < files.length) {
-      const index = next++;
-      const name = files[index];
-      results[index] = { name, date: parseFilenameDate(name) || await extractExifDate(name) };
+    const results = [];
+    let next = 0;
+    const workers = Math.min(4, files.length);
+
+    async function worker() {
+      while (next < files.length) {
+        const index = next++;
+        const name = files[index];
+        results[index] = { name, date: parseFilenameDate(name) || await extractExifDate(name) };
+      }
     }
+    await Promise.all(Array.from({ length: workers }, worker));
+    return results;
+  } catch (githubError) {
+    // Safety net: retain the existing manifest as a fallback.
+    console.warn("Direct GitHub photo listing failed; using photos.json:", githubError);
+    const response = await fetch("photos.json?v=" + Date.now(), { cache: "no-store" });
+    if (!response.ok) throw new Error("Could not read photos.json (" + response.status + ")");
+    const names = await response.json();
+    if (!Array.isArray(names)) throw new Error("Invalid photos.json");
+
+    const files = names.filter(name => typeof name === "string" && /\.(jpe?g|png)$/i.test(name));
+    const results = [];
+    let next = 0;
+    const workers = Math.min(4, files.length);
+
+    async function worker() {
+      while (next < files.length) {
+        const index = next++;
+        const name = files[index];
+        results[index] = { name, date: parseFilenameDate(name) || await extractExifDate(name) };
+      }
+    }
+    await Promise.all(Array.from({ length: workers }, worker));
+    return results;
   }
-  await Promise.all(Array.from({ length: workers }, worker));
-  return results;
 }
 
 function render(photos) {
